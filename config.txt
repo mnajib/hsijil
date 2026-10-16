@@ -37,7 +37,7 @@ tebal     = ya
 offset_mm = 0 0          # pembetulan printer: x y (nilai negatif untuk menggerak ke kiri/atas)
 nama_saiz = 12 24        # min maks
 kp_saiz   = 10 16        # min maks. No. KP sentiasa <= saiz nama (lihat atas)
-jarak_mm  = 3
+jarak_mm  = 0 #1 #3
 
 # --- CONTOH (ganti nama dan ukuran dengan yang sebenar) ---
 [kursus-a]
