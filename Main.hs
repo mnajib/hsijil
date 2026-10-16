@@ -8,7 +8,7 @@
    2. JENIS DATA      Spec (satu template), Peserta (satu baris CSV), Layout, Hasil
    3. FUNGSI TULEN    pure_*  tiada kesan sampingan (kira, semak, format teks)
         - ukuran & susun atur  : pure_layout, pure_fitSize
-        - semakan data         : pure_checkRows, pure_isKP
+        - semakan data         : pure_checkRows
         - laporan              : pure_report, pure_summary, pure_help
         - pembacaan config     : pure_parseConfig dan pembantunya
    4. FUNGSI IO       io_*    fail, cairo (lukis PDF), terminal
@@ -26,6 +26,10 @@
    pure_xxx = fungsi tulen,  io_xxx = fungsi dengan kesan sampingan.
    Semua jarak dalam mm, semua saiz font dalam pt. Pengiraan dalaman guna pt
    (1 inci = 25.4 mm = 72 pt).
+
+ NOMBOR PENGENALAN (nokp)
+   Format TIDAK disemak: bukan warganegara dan dokumen lain mempunyai format
+   berlainan. Program hanya memastikan teks itu muat pada sijil.
 -}
 module Main (main) where
 
@@ -37,8 +41,8 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as B8
 -- cassava: FromNamedRecord, decodeByName, (.:) untuk baca lajur CSV ikut nama
 import qualified Data.Csv as Csv
--- base: isDigit (semak format No. KP), isSpace (buang ruang kosong)
-import Data.Char (isDigit, isSpace)
+-- base: isSpace (buang ruang kosong)
+import Data.Char (isSpace)
 -- base: dropWhileEnd, intercalate, isPrefixOf, isSuffixOf, partition
 import Data.List (dropWhileEnd, intercalate, isPrefixOf, isSuffixOf, partition)
 -- containers: Map (kumpul peserta ikut template, kira bilangan)
@@ -219,20 +223,10 @@ pure_layout s asc desc wN wK = Layout sN sK baseN baseK status
 
 -- ---- Semakan data CSV ----
 
--- Format No. KP baru: 6 digit - 2 digit - 4 digit (contoh 900101-14-5555).
--- Cara: tukar setiap digit kepada 'd', kemudian banding dengan bentuk yang dijangka.
---   pure_isKP "900101-14-5555" == True
---   pure_isKP "9001011455"     == False
-pure_isKP :: String -> Bool
-pure_isKP s = map cls s == "dddddd-dd-dddd"
-  where
-    cls c
-      | isDigit c = 'd'
-      | otherwise = c
-
 -- Semak semua baris. Pulangkan (ralat, amaran).
 --   RALAT  = sijil tidak boleh dijana (nama kosong, template tidak dikenali)
---   AMARAN = boleh dijana tetapi patut disemak (format No. KP, fail tiada data)
+--   AMARAN = boleh dijana tetapi patut disemak (nokp kosong, fail tiada data)
+-- Format nokp TIDAK disemak (bukan warganegara dsb. guna format berlainan).
 -- Args: senarai nama template dalam config, fail CSV. Baris 1 = tajuk, data bermula baris 2.
 pure_checkRows :: [String] -> [Fail] -> ([String], [String])
 pure_checkRows known files = (concatMap fst per, concatMap snd per)
@@ -256,8 +250,8 @@ pure_checkRows known files = (concatMap fst per, concatMap snd per)
 
     warns :: FilePath -> Int -> Peserta -> [String]
     warns f n p =
-      [ printf "%s baris %d (%s): No. KP '%s' bukan format 900101-14-5555" f n (pNama p) (pNoKP p)
-      | not (pure_isKP (pNoKP p)) ]
+      [ printf "%s baris %d (%s): nokp kosong" f n (pNama p)
+      | null (pNoKP p) ]
 
 -- ---- Laporan ----
 
@@ -362,6 +356,8 @@ pure_help = unlines
   , "FORMAT CSV   (UTF-8, baris pertama = tajuk)"
   , "   nama,nokp,template"
   , "   AHMAD BIN ALI,900101-14-5555,kursus-a"
+  , "   nokp: apa-apa format diterima (No. KP, nombor pengenalan bukan warganegara, dsb.)."
+  , "         Amaran hanya jika kosong."
   , "   Satu CSV boleh mengandungi beberapa template. Setiap nama dalam lajur"
   , "   'template' mesti ada seksyen [nama] yang sama dalam config.txt."
   , "   Fail CSV kosong atau hanya ada tajuk: diberi amaran dan dilangkau."
