@@ -5,12 +5,12 @@
 
  PETA FAIL INI (atas ke bawah)
    1. IMPORT          dari pustaka mana setiap komponen datang
-   2. JENIS DATA      Spec (satu template), Peserta (satu baris CSV), Layout, Hasil
+   2. JENIS DATA      Spec (satu template), ColMap (nama lajur CSV), Peserta, Layout, Hasil
    3. FUNGSI TULEN    pure_*  tiada kesan sampingan (kira, semak, format teks)
         - ukuran & susun atur  : pure_layout, pure_fitSize
         - semakan data         : pure_checkRows
         - laporan              : pure_report, pure_summary, pure_help
-        - pembacaan config     : pure_parseConfig dan pembantunya
+        - pembacaan config     : pure_parseConfig, pure_boxFrom dan pembantunya
    4. FUNGSI IO       io_*    fail, cairo (lukis PDF), terminal
         - io_prepare : muat + semak + paparkan laporan  (kongsi oleh semak & jana)
         - io_jana    : jana sijil sebenar
@@ -36,6 +36,21 @@
    Peraturan ini dikira dalam pure_layout dan kekal walaupun nama dikecilkan
    (ikut lebar) atau kedua-dua baris dikecilkan (ikut tinggi).
    Peraturan ini diutamakan berbanding kp_saiz min.
+
+ KOTAK (dua cara menulisnya dalam config, dalam SATU seksyen)
+   A. kotak_mm = x1 y1 x2 y2
+   B. kombinasi (keempat-empat diperlukan):
+        kotakHorizontalCenterPoint_mm  titik tengah mendatar
+        kotakWidth_mm                  lebar kotak
+        kotakPointAtas_mm              y atas
+        kotakPointBawah_mm             y bawah
+      => x1 = tengah - lebar/2, x2 = tengah + lebar/2
+   Jika kedua-duanya ditulis dalam seksyen yang sama, KOMBINASI DIUTAMAKAN.
+   Jika seksyen template tiada kotak langsung, kotak diwarisi daripada [global]
+   (peraturan sama). Kombinasi tidak dicampur antara seksyen.
+
+ NAMA LAJUR CSV
+   Lalai: nama, nokp, template. Boleh dipetakan dalam seksyen [csv] config.
 -}
 module Main (main) where
 
@@ -43,18 +58,22 @@ module Main (main) where
 import Control.Monad (forM, forM_, unless, void, when)
 -- bytestring: ByteString lazy (baca fail CSV mentah; all/take/drop/pack untuk BOM dan fail kosong)
 import qualified Data.ByteString.Lazy as BL
--- bytestring: B8.pack (tukar String ke ByteString untuk nama lajur CSV)
-import qualified Data.ByteString.Char8 as B8
--- cassava: FromNamedRecord, decodeByName, (.:) untuk baca lajur CSV ikut nama
+-- cassava: decodeByName, NamedRecord, Parser, runParser, (.:) untuk baca lajur CSV ikut nama
 import qualified Data.Csv as Csv
 -- base: isSpace (buang ruang kosong)
 import Data.Char (isSpace)
--- base: dropWhileEnd, intercalate, isPrefixOf, isSuffixOf, partition
-import Data.List (dropWhileEnd, intercalate, isPrefixOf, isSuffixOf, partition)
+-- base: dropWhileEnd, intercalate, isPrefixOf, isSuffixOf
+import Data.List (dropWhileEnd, intercalate, isPrefixOf, isSuffixOf)
 -- containers: Map (kumpul peserta ikut template, kira bilangan)
 import qualified Data.Map.Strict as Map
--- text: Text (medan CSV UTF-8), unpack (tukar ke String)
+-- base: fromMaybe (nilai lalai bila kunci tiada)
+import Data.Maybe (fromMaybe)
+-- text: Text (medan CSV UTF-8), pack/unpack (tukar dengan String)
 import qualified Data.Text as T
+-- text: encodeUtf8, decodeUtf8With (nama lajur UTF-8 <-> String)
+import qualified Data.Text.Encoding as TE
+-- text: lenientDecode (jangan ranap jika ada bait UTF-8 rosak dalam tajuk)
+import Data.Text.Encoding.Error (lenientDecode)
 -- vector: toList (cassava pulangkan Vector)
 import qualified Data.Vector as V
 -- cairo: semua fungsi lukisan dan PDF di bawah
@@ -88,6 +107,13 @@ import Text.Read (readMaybe)
 -- 2. JENIS DATA
 -- ===================================================================
 
+-- Dari mana kotak sesuatu template diambil (dipaparkan dalam laporan semakan)
+data SumberKotak
+  = KotakMm            -- kotak_mm
+  | Kombinasi          -- kombinasi 4 kunci
+  | KombinasiDanKotak  -- kedua-duanya ditulis; kombinasi dipakai, kotak_mm diabaikan
+  deriving (Eq)
+
 -- Spesifikasi LENGKAP satu template (selepas gabung [global] + [template]).
 -- Semua jarak dalam mm, saiz font dalam pt.
 data Spec = Spec
@@ -107,6 +133,14 @@ data Spec = Spec
   , sKpMin   :: Double
   , sKpMax   :: Double  -- saiz PILIHAN No. KP (diturunkan jika nama lebih kecil)
   , sGap     :: Double  -- jarak antara baris nama dan No. KP
+  , sBoxSrc  :: SumberKotak
+  }
+
+-- Nama lajur dalam CSV (boleh dipetakan dalam seksyen [csv] config)
+data ColMap = ColMap
+  { cNama     :: String
+  , cNoKP     :: String
+  , cTemplate :: String
   }
 
 -- Satu baris dari CSV. Semua medan sudah dibuang ruang kosong di hujung.
@@ -115,12 +149,6 @@ data Peserta = Peserta
   , pNoKP     :: String
   , pTemplate :: String
   }
-
-instance Csv.FromNamedRecord Peserta where
-  parseNamedRecord r =
-    Peserta <$> field "nama" <*> field "nokp" <*> field "template"
-    where
-      field k = pure_strip . T.unpack <$> (r Csv..: B8.pack k)
 
 -- Fail CSV beserta barisnya (nama fail diperlukan untuk mesej ralat)
 type Fail = (FilePath, [Peserta])
@@ -271,6 +299,11 @@ pure_checkRows known files = (concatMap fst per, concatMap snd per)
 
 -- ---- Laporan ----
 
+pure_srcLabel :: SumberKotak -> String
+pure_srcLabel KotakMm           = "kotak_mm"
+pure_srcLabel Kombinasi         = "kombinasi"
+pure_srcLabel KombinasiDanKotak = "kombinasi*"
+
 -- Laporan semakan: jadual template + ralat + amaran + kesimpulan
 pure_report :: [Spec] -> [Fail] -> [String] -> [String] -> String
 pure_report specs files errs warns =
@@ -279,9 +312,11 @@ pure_report specs files errs warns =
     , "Config  : " ++ show (length specs) ++ " template aktif"
     , "Data    : " ++ unwords (map fst files)
     , ""
-    , printf "%-14s %-13s %-22s %6s  %s" "Template" "Kertas (mm)" "Kotak x1,y1 - x2,y2" "Sijil" ""
+    , printf "%-14s %-13s %-27s %-11s %6s" "Template" "Kertas (mm)" "Kotak x1,y1 - x2,y2" "Sumber" "Sijil"
     ]
       ++ map line specs
+      ++ [ "* kotak_mm juga ditulis dalam seksyen itu tetapi DIABAIKAN (kombinasi diutamakan)."
+         | any ((== KombinasiDanKotak) . sBoxSrc) specs ]
       ++ [""]
       ++ section "RALAT" errs
       ++ section "AMARAN" warns
@@ -292,10 +327,11 @@ pure_report specs files errs warns =
     bar n    = replicate (n * 30 `div` maxCnt) '█'
     line :: Spec -> String
     line s =
-      printf "%-14s %-13s %-22s %6d  %s"
+      printf "%-14s %-13s %-27s %-11s %6d  %s"
         (sName s)
         (printf "%.1fx%.1f" (sPageW s) (sPageH s) :: String)
         (printf "%.1f,%.1f - %.1f,%.1f" (sX1 s) (sY1 s) (sX2 s) (sY2 s) :: String)
+        (pure_srcLabel (sBoxSrc s))
         (cnt s) (bar (cnt s))
     section :: String -> [String] -> [String]
     section _ [] = []
@@ -344,7 +380,7 @@ pure_summary outDir hs =
 
 pure_conclusion :: Int -> Int -> Int -> String
 pure_conclusion over shrunk total
-  | over > 0   = printf "KESIMPULAN: %d/%d sijil MASIH terlebih pada saiz minimum. Besarkan kotak_mm atau kecilkan saiz min dalam config." over total
+  | over > 0   = printf "KESIMPULAN: %d/%d sijil MASIH terlebih pada saiz minimum. Besarkan kotak atau kecilkan saiz min dalam config." over total
   | shrunk > 0 = printf "KESIMPULAN: semua %d sijil muat; %d dikecilkan automatik." total shrunk
   | otherwise  = printf "KESIMPULAN: semua %d sijil muat pada saiz maksimum." total
 
@@ -370,8 +406,8 @@ pure_help = unlines
   , "   (dalam projek ini, `make semak` dan `make jana` melakukannya untuk anda)"
   , ""
   , "FORMAT CSV   (UTF-8, baris pertama = tajuk)"
-  , "   nama,nokp,template"
-  , "   AHMAD BIN ALI,900101-14-5555,kursus-a"
+  , "   nama,nokp,template        (nama lajur lain boleh dipetakan dalam [csv] config.txt;"
+  , "   AHMAD BIN ALI,900101-14-5555,kursus-a   lajur tambahan lain diabaikan)"
   , "   nokp: apa-apa format diterima (No. KP, nombor pengenalan bukan warganegara, dsb.)."
   , "         Amaran hanya jika kosong."
   , "   Satu CSV boleh mengandungi beberapa template. Setiap nama dalam lajur"
@@ -380,8 +416,11 @@ pure_help = unlines
   , ""
   , "CONFIG   (lihat komen di kepala config.txt untuk semua kunci)"
   , "   [global]  nilai lalai untuk semua template"
+  , "   [csv]     nama = NAMA GURU   (pemetaan nama lajur CSV; pilihan)"
   , "   [nama]    kertas_mm = 297 210        lebar tinggi kertas (mm)"
   , "             kotak_mm  = 60 95 237 125  x1 y1 x2 y2 ruang kosong, dari SUDUT KIRI ATAS (mm)"
+  , "             ATAU kombinasi: kotakHorizontalCenterPoint_mm, kotakWidth_mm,"
+  , "                             kotakPointAtas_mm, kotakPointBawah_mm  (kombinasi diutamakan)"
   , "             nama_saiz = 12 24          saiz font nama: min maks (pt)"
   , "             kp_saiz   = 10 16          saiz font No. KP: min maks (pt)"
   , ""
@@ -400,11 +439,22 @@ pure_help = unlines
 -- ---- Pembacaan config (format seksyen) ----
 type Section = (String, [(String, String)])
 
--- Kunci yang dibenarkan dalam config. Kunci lain ditolak (menangkap salah taip).
+-- Empat kunci kombinasi kotak (semua diperlukan jika kombinasi digunakan)
+pure_comboKeys :: [String]
+pure_comboKeys =
+  [ "kotakHorizontalCenterPoint_mm", "kotakWidth_mm"
+  , "kotakPointAtas_mm", "kotakPointBawah_mm" ]
+
+-- Kunci yang dibenarkan dalam seksyen [global] dan seksyen template.
+-- Kunci lain ditolak (menangkap salah taip).
 pure_knownKeys :: [String]
 pure_knownKeys =
   [ "font", "tebal", "kertas_mm", "offset_mm", "kotak_mm"
-  , "nama_saiz", "kp_saiz", "jarak_mm" ]
+  , "nama_saiz", "kp_saiz", "jarak_mm" ] ++ pure_comboKeys
+
+-- Kunci yang dibenarkan dalam seksyen [csv]
+pure_csvKeys :: [String]
+pure_csvKeys = ["nama", "nokp", "template"]
 
 -- Pecahkan config kepada seksyen [nama] + pasangan kunci = nilai
 pure_parseSections :: String -> Either String [Section]
@@ -429,22 +479,80 @@ pure_parseSections src = go Nothing [] (zip [1 :: Int ..] (lines src))
           | otherwise ->
               Left ("Baris " ++ show n ++ " tidak difahami: " ++ l)
 
-pure_parseConfig :: String -> Either String [Spec]
+-- Config penuh: senarai template + pemetaan lajur CSV
+pure_parseConfig :: String -> Either String ([Spec], ColMap)
 pure_parseConfig src = do
   secs <- pure_parseSections src
-  let (gs, ts) = partition ((== "global") . fst) secs
+  let isGlobal = (== "global") . fst
+      isCsv    = (== "csv") . fst
+      gs = filter isGlobal secs
+      cs = filter isCsv secs
+      ts = filter (\s -> not (isGlobal s || isCsv s)) secs
       gkv   = concatMap snd gs
       names = map fst ts
       dups  = [ n | (i, n) <- zip [0 :: Int ..] names, n `elem` take i names ]
       badKeys =
         [ "[" ++ sec ++ "] kunci tidak dikenali: '" ++ k ++ "'"
-        | (sec, kvs) <- secs, (k, _) <- kvs, k `notElem` pure_knownKeys ]
+        | (sec, kvs) <- gs ++ ts, (k, _) <- kvs, k `notElem` pure_knownKeys ]
   unless (null badKeys) $
     Left (intercalate "\n" badKeys ++ "\n(kunci yang sah disenaraikan di kepala config.txt)")
-  unless (null dups) $ Left ("Template berganda dalam config: " ++ unwords dups)
+  unless (null dups) $ Left ("Template berganda dalam config: " ++ unwords dups
+    ++ "\n(satu nama template = SATU seksyen; letak # pada seksyen yang tidak digunakan)")
   when (null ts) $
     Left "Tiada template aktif dalam config.txt (semua dinyahaktifkan dengan # ?)"
-  mapM (pure_buildSpec gkv) ts
+  cols  <- pure_buildCols (concatMap snd cs)
+  specs <- mapM (pure_buildSpec gkv) ts
+  pure (specs, cols)
+
+-- Pemetaan lajur CSV dari seksyen [csv]. Kunci tiada = guna nama lalai (nama, nokp, template).
+pure_buildCols :: [(String, String)] -> Either String ColMap
+pure_buildCols kv = do
+  let bad = [ k | (k, _) <- kv, k `notElem` pure_csvKeys ]
+  unless (null bad) $
+    Left ("[csv] kunci tidak dikenali: " ++ unwords bad ++ "  (yang sah: " ++ unwords pure_csvKeys ++ ")")
+  pure (ColMap (pick "nama") (pick "nokp") (pick "template"))
+  where
+    pick k = fromMaybe k (lookup k kv)
+
+-- Cari kotak dalam SATU senarai kunci (satu seksyen sahaja).
+--   Nothing          = seksyen ini tidak menulis kotak langsung
+--   Just (Left e)    = ditulis tetapi salah (mesej e)
+--   Just (Right ..)  = (x1, y1, x2, y2, sumber)
+-- PERATURAN: jika mana-mana kunci kombinasi ditulis, KOMBINASI digunakan dan
+-- kotak_mm diabaikan. Jika tiada, guna kotak_mm.
+pure_boxFrom :: [(String, String)]
+             -> Maybe (Either String (Double, Double, Double, Double, SumberKotak))
+pure_boxFrom kv
+  | any hasKey pure_comboKeys = Just combo
+  | hasKey "kotak_mm"         = Just plain
+  | otherwise                 = Nothing
+  where
+    hasKey k = k `elem` map fst kv
+
+    missing = [ k | k <- pure_comboKeys, not (hasKey k) ]
+
+    num :: String -> Either String Double
+    num k = case lookup k kv >>= readMaybe of
+      Just v  -> Right v
+      Nothing -> Left ("'" ++ k ++ "' mesti satu nombor, contoh: 114")
+
+    combo :: Either String (Double, Double, Double, Double, SumberKotak)
+    combo
+      | not (null missing) =
+          Left ("kombinasi kotak tidak lengkap, tiada: " ++ intercalate ", " missing
+                ++ " (keempat-empat diperlukan, atau guna kotak_mm sahaja)")
+      | otherwise = do
+          c <- num "kotakHorizontalCenterPoint_mm"
+          w <- num "kotakWidth_mm"
+          a <- num "kotakPointAtas_mm"
+          b <- num "kotakPointBawah_mm"
+          pure ( c - w / 2, a, c + w / 2, b
+               , if hasKey "kotak_mm" then KombinasiDanKotak else Kombinasi )
+
+    plain :: Either String (Double, Double, Double, Double, SumberKotak)
+    plain = case lookup "kotak_mm" kv >>= mapM readMaybe . words of
+      Just [a, b, c, d] -> Right (a, b, c, d, KotakMm)
+      _                 -> Left "'kotak_mm' mesti 4 nombor, contoh: 60 95 237 125"
 
 -- Gabung [global] + seksyen template: nilai template menggantikan [global]
 pure_buildSpec :: [(String, String)] -> Section -> Either String Spec
@@ -453,11 +561,11 @@ pure_buildSpec gkv (name, tkv) = do
   bold     <- look "tebal" >>= pure_yesNo
   (pw, ph) <- pair "kertas_mm"
   (ox, oy) <- pair "offset_mm"
-  (x1, y1, x2, y2) <- quad "kotak_mm"
+  (x1, y1, x2, y2, src) <- box
   (nMin, nMax) <- pair "nama_saiz"
   (kMin, kMax) <- pair "kp_saiz"
   gap      <- single "jarak_mm"
-  pure_validate (Spec name font bold pw ph ox oy x1 y1 x2 y2 nMin nMax kMin kMax gap)
+  pure_validate (Spec name font bold pw ph ox oy x1 y1 x2 y2 nMin nMax kMin kMax gap src)
   where
     err :: String -> Either String a
     err m = Left ("[" ++ name ++ "] " ++ m)
@@ -466,6 +574,15 @@ pure_buildSpec gkv (name, tkv) = do
     pure_yesNo "ya"    = Right True
     pure_yesNo "tidak" = Right False
     pure_yesNo _       = err "'tebal' mesti 'ya' atau 'tidak'"
+
+    -- kotak: seksyen template dahulu; jika tiada kotak di situ, warisi dari [global]
+    box :: Either String (Double, Double, Double, Double, SumberKotak)
+    box = case pure_boxFrom tkv of
+      Just r  -> either err Right r
+      Nothing -> case pure_boxFrom gkv of
+        Just r  -> either err Right r
+        Nothing -> err ("tiada kotak: tulis kotak_mm ATAU kombinasi ("
+                        ++ intercalate ", " pure_comboKeys ++ ")")
 
     look :: String -> Either String String
     look key = case lookup key tkv of
@@ -482,7 +599,6 @@ pure_buildSpec gkv (name, tkv) = do
         _ -> err ("'" ++ key ++ "' mesti " ++ show n ++ " nombor, contoh: " ++ example key)
 
     example :: String -> String
-    example "kotak_mm"  = "60 95 237 125"
     example "kertas_mm" = "297 210"
     example "offset_mm" = "0 0"
     example "jarak_mm"  = "3"
@@ -498,17 +614,12 @@ pure_buildSpec gkv (name, tkv) = do
       [a, b] -> Right (a, b)
       _      -> err "ralat dalaman"
 
-    quad :: String -> Either String (Double, Double, Double, Double)
-    quad key = nums 4 key >>= \xs -> case xs of
-      [a, b, c, d] -> Right (a, b, c, d)
-      _            -> err "ralat dalaman"
-
 pure_validate :: Spec -> Either String Spec
 pure_validate s
   | sX2 s <= sX1 s || sY2 s <= sY1 s =
-      bad "kotak_mm: x2 mesti > x1 dan y2 mesti > y1"
+      bad "kotak: x2 mesti > x1 dan y2 mesti > y1 (kombinasi: kotakWidth_mm > 0 dan Bawah > Atas)"
   | sX1 s < 0 || sY1 s < 0 || sX2 s > sPageW s || sY2 s > sPageH s =
-      bad "kotak_mm keluar dari kertas (semak kertas_mm: landskap 297 210, potret 210 297)"
+      bad "kotak keluar dari kertas (semak kertas_mm: landskap 297 210, potret 210 297)"
   | sNamaMin s <= 0 || sKpMin s <= 0 =
       bad "saiz min mesti lebih daripada 0"
   | sNamaMin s > sNamaMax s || sKpMin s > sKpMax s =
@@ -516,6 +627,16 @@ pure_validate s
   | otherwise = Right s
   where
     bad m = Left ("[" ++ sName s ++ "] " ++ m)
+
+-- Tukar satu baris CSV (NamedRecord) kepada Peserta mengikut pemetaan lajur
+pure_toPeserta :: ColMap -> Csv.NamedRecord -> Either String Peserta
+pure_toPeserta cols r =
+  Csv.runParser (Peserta <$> field (cNama cols) <*> field (cNoKP cols) <*> field (cTemplate cols))
+  where
+    field :: String -> Csv.Parser String
+    field name = do
+      t <- r Csv..: TE.encodeUtf8 (T.pack name)
+      pure (pure_strip (T.unpack (t :: T.Text)))
 
 -- ===================================================================
 -- 4. FUNGSI IO / RENDER (ada kesan sampingan)
@@ -582,7 +703,7 @@ io_generateOne outDir s ps =
       showPage
       pure h
 
-io_loadConfig :: FilePath -> IO [Spec]
+io_loadConfig :: FilePath -> IO ([Spec], ColMap)
 io_loadConfig path = do
   io_requireFile "Fail config" path
   readFile path >>= either io_fail pure . pure_parseConfig
@@ -591,8 +712,9 @@ io_loadConfig path = do
 --   - BOM UTF-8 (kadang-kadang ditambah oleh Calc) dibuang
 --   - fail kosong / hanya ruang kosong dipulangkan sebagai 0 baris
 --     (pure_checkRows akan beri amaran; cassava sendiri akan ranap pada 0 bait)
-io_loadCsv :: FilePath -> IO Fail
-io_loadCsv path = do
+--   - lajur yang diperlukan (ikut ColMap) mesti ada dalam tajuk; lajur lain diabaikan
+io_loadCsv :: ColMap -> FilePath -> IO Fail
+io_loadCsv cols path = do
   io_requireFile "Fail CSV" path
   raw <- BL.readFile path
   let bytes = if BL.take 3 raw == BL.pack [0xEF, 0xBB, 0xBF] then BL.drop 3 raw else raw
@@ -600,16 +722,26 @@ io_loadCsv path = do
   if blank
     then pure (path, [])
     else case Csv.decodeByName bytes of
-      Left err      -> io_fail (path ++ ": CSV tidak boleh dibaca: " ++ err
-                                ++ "\n(pastikan baris pertama ialah nama,nokp,template dan fail ialah UTF-8)")
-      Right (_, vs) -> pure (path, V.toList vs)
+      Left err -> io_fail (path ++ ": CSV tidak boleh dibaca: " ++ err
+                           ++ "\n(pastikan baris pertama ialah tajuk lajur dan fail ialah UTF-8)")
+      Right (hdr, vs) -> do
+        let have    = [ T.unpack (TE.decodeUtf8With lenientDecode h) | h <- V.toList hdr ]
+            need    = [cNama cols, cNoKP cols, cTemplate cols]
+            missing = [ c | c <- need, c `notElem` have ]
+        unless (null missing) $
+          io_fail (path ++ ": lajur CSV tiada: " ++ intercalate ", " [ "'" ++ c ++ "'" | c <- missing ]
+                   ++ "\n  lajur yang ada : " ++ intercalate ", " have
+                   ++ "\n  (nama lajur boleh dipetakan dalam seksyen [csv] config.txt)")
+        case mapM (pure_toPeserta cols) (V.toList vs) of
+          Left err -> io_fail (path ++ ": baris CSV tidak boleh dibaca: " ++ err)
+          Right ps -> pure (path, ps)
 
 -- Muat config + CSV, semak, paparkan laporan. Berhenti jika ada ralat.
 -- Dikongsi oleh arahan `semak` dan `jana`.
 io_prepare :: FilePath -> [FilePath] -> IO ([Spec], [Fail])
 io_prepare cfgPath csvPaths = do
-  specs <- io_loadConfig cfgPath
-  files <- forM csvPaths io_loadCsv
+  (specs, cols) <- io_loadConfig cfgPath
+  files <- forM csvPaths (io_loadCsv cols)
   let (errs0, warns) = pure_checkRows (map sName specs) files
       errs = errs0 ++ [ "tiada sebarang baris data dalam semua fail CSV" | all (null . snd) files ]
   putStr (pure_report specs files errs warns)
@@ -686,13 +818,13 @@ io_renderUjian s p = do
   setFontSize 10
   let (tx, ty) = pure_pos s (5, 8)
   moveTo tx ty
-  showText ("Template: " ++ sName s)
+  showText ("Template: " ++ sName s ++ "   kotak: " ++ pure_srcLabel (sBoxSrc s))
   _ <- io_renderSijil s p
   pure ()
 
 io_ujian :: FilePath -> FilePath -> IO ()
 io_ujian cfgPath outDir = do
-  specs <- io_loadConfig cfgPath
+  (specs, _) <- io_loadConfig cfgPath
   createDirectoryIfMissing True outDir
   forM_ specs $ \s -> do
     let out = outDir </> (("ujian-" ++ sName s) <.> "pdf")
