@@ -1,0 +1,13 @@
+# binari dan fail perantaraan ghc
+jana-sijil
+build/
+
+# PDF yang dijana mengandungi nama + No. KP sebenar
+output/
+
+# data peserta sebenar: JANGAN commit. Hanya data/contoh.csv (rekaan) dibenarkan
+data/*
+!data/contoh.csv
+
+# direnv
+.direnv/

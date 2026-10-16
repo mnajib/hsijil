@@ -1,0 +1,53 @@
+# ============================================================
+# config.txt  -  SATU-SATUNYA tempat kedudukan, saiz kertas dan font
+#
+# CARA BACA FAIL INI
+#   [global]      nilai lalai untuk SEMUA template
+#   [nama]        satu template. Nama mesti sama dengan lajur 'template' dalam CSV
+#   kunci = nilai satu tetapan. Teks selepas # ialah komen (diabaikan)
+#   Nilai dalam seksyen template MENGGANTIKAN [global]
+#
+# SATU TEMPLATE = SATU SEKSYEN. Satu fail CSV boleh mengandungi baris
+# untuk beberapa template; setiap nama template yang dipakai dalam CSV
+# mesti ada seksyennya di sini. Satu PDF dijana untuk setiap template.
+#
+# UNIT
+#   Jarak       : milimeter (mm), diukur dari SUDUT KIRI ATAS kertas
+#   Saiz font   : point (pt)
+#
+# KUNCI YANG DIKENALI (kunci lain akan ditolak oleh program)
+#   font       nama font, semak dengan:  fc-list : family | sort -u
+#   tebal      ya | tidak
+#   kertas_mm  lebar tinggi kertas.   A4 landskap = 297 210, A4 potret = 210 297
+#   kotak_mm   x1 y1 x2 y2  (kiri atas kanan bawah ruang kosong pada sijil)
+#   nama_saiz  min maks     saiz font nama (nama panjang dikecilkan automatik)
+#   kp_saiz    min maks     saiz font No. KP
+#   jarak_mm   jarak antara baris nama dan baris No. KP
+#   offset_mm  x y          pembetulan printer (lihat README, bahagian Kalibrasi)
+#
+# NYAHAKTIFKAN template: letak # di hadapan SEMUA barisnya (termasuk [nama]).
+# TAMBAH template baharu: salin satu seksyen, tukar nama + ukuran.
+# ============================================================
+
+[global]
+font      = DejaVu Sans
+tebal     = ya
+offset_mm = 0 0          # pembetulan printer: x y (nilai negatif untuk menggerak ke kiri/atas)
+nama_saiz = 12 24        # min maks
+kp_saiz   = 10 16        # min maks
+jarak_mm  = 3
+
+# --- CONTOH (ganti nama dan ukuran dengan yang sebenar) ---
+[kursus-a]
+kertas_mm = 297 210
+kotak_mm  = 60 95 237 125     # x1 y1 x2 y2
+
+[kursus-b]
+kertas_mm = 210 297
+kotak_mm  = 30 140 180 170
+nama_saiz = 11 20             # menggantikan [global]
+
+# --- Template lama (dinyahaktifkan) ---
+# [seminar]
+# kertas_mm = 297 210
+# kotak_mm  = 70 80 227 110
