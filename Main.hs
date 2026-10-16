@@ -30,6 +30,12 @@
  NOMBOR PENGENALAN (nokp)
    Format TIDAK disemak: bukan warganegara dan dokumen lain mempunyai format
    berlainan. Program hanya memastikan teks itu muat pada sijil.
+
+ PERATURAN SAIZ FONT
+   Saiz font No. KP TIDAK PERNAH lebih besar daripada saiz font nama.
+   Peraturan ini dikira dalam pure_layout dan kekal walaupun nama dikecilkan
+   (ikut lebar) atau kedua-dua baris dikecilkan (ikut tinggi).
+   Peraturan ini diutamakan berbanding kp_saiz min.
 -}
 module Main (main) where
 
@@ -99,7 +105,7 @@ data Spec = Spec
   , sNamaMin :: Double
   , sNamaMax :: Double
   , sKpMin   :: Double
-  , sKpMax   :: Double
+  , sKpMax   :: Double  -- saiz PILIHAN No. KP (diturunkan jika nama lebih kecil)
   , sGap     :: Double  -- jarak antara baris nama dan No. KP
   }
 
@@ -184,6 +190,10 @@ pure_fitSize maxW sMax sMin w
 
 -- Susun atur dua baris dalam kotak.
 -- Args: spec, ascent/saiz, descent/saiz, lebar nama pada saizMaks, lebar KP pada saizMaks (pt)
+--
+-- PERATURAN: saiz No. KP TIDAK PERNAH lebih besar daripada saiz nama.
+--   Peraturan ini diutamakan berbanding kp_saiz min.
+--   Lebar teks berskala linear dengan saiz, jadi lebar pada saiz s ialah w * s / saizMaks.
 pure_layout :: Spec -> Double -> Double -> Double -> Double -> Layout
 pure_layout s asc desc wN wK = Layout sN sK baseN baseK status
   where
@@ -194,24 +204,30 @@ pure_layout s asc desc wN wK = Layout sN sK baseN baseK status
     lh   = asc + desc                       -- tinggi baris per 1 pt saiz
     need a b = lh * (a + b) + gap           -- tinggi blok dua baris
 
-    -- 1) ikut lebar
-    nW = pure_fitSize boxW (sNamaMax s) (sNamaMin s) wN
-    kW = pure_fitSize boxW (sKpMax s) (sKpMin s) wK
+    -- 1) ikut LEBAR
+    nFit = pure_fitSize boxW (sNamaMax s) (sNamaMin s) wN   -- saiz nama yang muat
+    kFit = pure_fitSize boxW (sKpMax s) (sKpMin s) wK       -- saiz KP pilihan yang muat
 
-    -- 2) ikut tinggi (kecilkan kedua-dua baris mengikut nisbah jika perlu)
-    f = (boxH - gap) / (lh * (nW + kW))
-    (sN, sK)
-      | need nW kW <= boxH = (nW, kW)
-      | otherwise = ( max (sNamaMin s) (pure_floorTenth (nW * f))
-                    , max (sKpMin s)   (pure_floorTenth (kW * f)) )
+    -- 2) PERATURAN: KP tidak melebihi nama
+    nR = nFit
+    kR = min kFit nFit
 
-    -- 3) letak: blok ditengahkan menegak dalam kotak
+    -- 3) ikut TINGGI (kecilkan kedua-dua baris mengikut nisbah jika perlu)
+    f = (boxH - gap) / (lh * (nR + kR))
+    (sN, sK1)
+      | need nR kR <= boxH = (nR, kR)
+      | otherwise = ( max (sNamaMin s) (pure_floorTenth (nR * f))
+                    , max (sKpMin s)   (pure_floorTenth (kR * f)) )
+    -- peraturan dikekalkan walaupun had min KP lebih besar daripada saiz nama
+    sK = min sK1 sN
+
+    -- 4) letak: blok ditengahkan menegak dalam kotak
     blockH = need sN sK
     top    = by1 + (boxH - blockH) / 2
     baseN  = top + asc * sN
     baseK  = top + lh * sN + gap + asc * sK
 
-    -- 4) semak
+    -- 5) semak
     eps      = 0.01
     widthOK  = wN * sN / sNamaMax s <= boxW + eps
             && wK * sK / sKpMax s   <= boxW + eps
@@ -367,6 +383,12 @@ pure_help = unlines
   , "   [nama]    kertas_mm = 297 210        lebar tinggi kertas (mm)"
   , "             kotak_mm  = 60 95 237 125  x1 y1 x2 y2 ruang kosong, dari SUDUT KIRI ATAS (mm)"
   , "             nama_saiz = 12 24          saiz font nama: min maks (pt)"
+  , "             kp_saiz   = 10 16          saiz font No. KP: min maks (pt)"
+  , ""
+  , "SAIZ FONT"
+  , "   - Nama panjang dikecilkan automatik supaya muat dalam kotak."
+  , "   - Saiz No. KP TIDAK PERNAH lebih besar daripada saiz nama (diturunkan automatik)."
+  , "     Peraturan ini diutamakan berbanding kp_saiz min."
   , ""
   , "TIPS"
   , "   - Cetak dengan Actual size / 100%, bukan Fit to page."

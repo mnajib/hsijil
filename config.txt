@@ -21,7 +21,9 @@
 #   kertas_mm  lebar tinggi kertas.   A4 landskap = 297 210, A4 potret = 210 297
 #   kotak_mm   x1 y1 x2 y2  (kiri atas kanan bawah ruang kosong pada sijil)
 #   nama_saiz  min maks     saiz font nama (nama panjang dikecilkan automatik)
-#   kp_saiz    min maks     saiz font No. KP
+#   kp_saiz    min maks     saiz font No. KP. PERATURAN: saiz No. KP TIDAK PERNAH
+#                           lebih besar daripada saiz nama (diturunkan automatik).
+#                           'maks' = saiz pilihan apabila nama cukup besar.
 #   jarak_mm   jarak antara baris nama dan baris No. KP
 #   offset_mm  x y          pembetulan printer (lihat README, bahagian Kalibrasi)
 #
@@ -34,7 +36,7 @@ font      = DejaVu Sans
 tebal     = ya
 offset_mm = 0 0          # pembetulan printer: x y (nilai negatif untuk menggerak ke kiri/atas)
 nama_saiz = 12 24        # min maks
-kp_saiz   = 10 16        # min maks
+kp_saiz   = 10 16        # min maks. No. KP sentiasa <= saiz nama (lihat atas)
 jarak_mm  = 3
 
 # --- CONTOH (ganti nama dan ukuran dengan yang sebenar) ---
