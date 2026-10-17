@@ -5,12 +5,12 @@
 
  PETA FAIL INI (atas ke bawah)
    1. IMPORT          dari pustaka mana setiap komponen datang
-   2. JENIS DATA      Spec (satu template), ColMap (nama lajur CSV), Peserta, Layout, Hasil
+   2. JENIS DATA      Spec (satu template), ColMap/CsvCfg (nama lajur CSV), Fail, Peserta, Layout, Hasil
    3. FUNGSI TULEN    pure_*  tiada kesan sampingan (kira, semak, format teks)
         - ukuran & susun atur  : pure_layout, pure_fitSize
         - semakan data         : pure_checkRows
         - laporan              : pure_report, pure_summary, pure_help
-        - pembacaan config     : pure_parseConfig, pure_boxFrom dan pembantunya
+        - pembacaan config     : pure_parseConfig, pure_boxFrom, pure_colsFor dan pembantunya
    4. FUNGSI IO       io_*    fail, cairo (lukis PDF), terminal
         - io_prepare : muat + semak + paparkan laporan  (kongsi oleh semak & jana)
         - io_jana    : jana sijil sebenar
@@ -49,8 +49,11 @@
    Jika seksyen template tiada kotak langsung, kotak diwarisi daripada [global]
    (peraturan sama). Kombinasi tidak dicampur antara seksyen.
 
- NAMA LAJUR CSV
-   Lalai: nama, nokp, template. Boleh dipetakan dalam seksyen [csv] config.
+ NAMA LAJUR CSV (tiga peringkat; yang lebih khusus menang, KUNCI demi kunci)
+   [csv nama-fail.csv]  pemetaan untuk SATU fail (padan nama fail sahaja, tanpa folder)
+   [csv]                pemetaan lalai untuk fail yang tiada seksyen sendiri
+   (tiada)              nama lalai: nama, nokp, template
+   Setiap seksyen boleh menulis kunci: nama, nokp, template (nilai = tajuk lajur CSV).
 -}
 module Main (main) where
 
@@ -94,8 +97,8 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Environment (getArgs)
 -- base: exitFailure (keluar dengan kod ralat)
 import System.Exit (exitFailure)
--- filepath: (</>) gabung laluan, (<.>) tambah sambungan
-import System.FilePath ((<.>), (</>))
+-- filepath: (</>) gabung laluan, (<.>) tambah sambungan, takeFileName (nama fail tanpa folder)
+import System.FilePath (takeFileName, (<.>), (</>))
 -- base: hPutStrLn, stderr (cetak ralat)
 import System.IO (hPutStrLn, stderr)
 -- base: printf (format jadual)
@@ -136,11 +139,19 @@ data Spec = Spec
   , sBoxSrc  :: SumberKotak
   }
 
--- Nama lajur dalam CSV (boleh dipetakan dalam seksyen [csv] config)
+-- Nama lajur dalam SATU fail CSV (selepas pemetaan [csv] diselesaikan)
 data ColMap = ColMap
   { cNama     :: String
   , cNoKP     :: String
   , cTemplate :: String
+  }
+
+-- Semua pemetaan lajur dari config:
+--   ccDefault = kunci dalam seksyen [csv]
+--   ccFiles   = (nama fail, kunci) untuk setiap seksyen [csv nama-fail.csv]
+data CsvCfg = CsvCfg
+  { ccDefault :: [(String, String)]
+  , ccFiles   :: [(String, [(String, String)])]
   }
 
 -- Satu baris dari CSV. Semua medan sudah dibuang ruang kosong di hujung.
@@ -150,8 +161,12 @@ data Peserta = Peserta
   , pTemplate :: String
   }
 
--- Fail CSV beserta barisnya (nama fail diperlukan untuk mesej ralat)
-type Fail = (FilePath, [Peserta])
+-- Satu fail CSV yang sudah dibaca
+data Fail = Fail
+  { fPath :: FilePath   -- laluan seperti diberi pada baris arahan (untuk mesej)
+  , fRows :: [Peserta]
+  , fMap  :: String     -- pemetaan lajur yang digunakan (untuk laporan)
+  }
 
 data Status = Muat | Dikecilkan | Terlebih
   deriving (Eq)
@@ -277,11 +292,11 @@ pure_checkRows known files = (concatMap fst per, concatMap snd per)
   where
     per :: [([String], [String])]
     per =
-      [ (errs f n p, warns f n p) | (f, ps) <- files, (n, p) <- zip [2 :: Int ..] ps ]
+      [ (errs f n p, warns f n p) | Fail f ps _ <- files, (n, p) <- zip [2 :: Int ..] ps ]
       ++
       -- fail kosong (0 bait) atau hanya ada tajuk: bukan ralat, tetapi patut dimaklumkan
       [ ([], [printf "%s: fail kosong atau tiada baris data (fail ini dilangkau)" f])
-      | (f, ps) <- files, null ps ]
+      | Fail f ps _ <- files, null ps ]
 
     errs :: FilePath -> Int -> Peserta -> [String]
     errs f n p =
@@ -304,14 +319,21 @@ pure_srcLabel KotakMm           = "kotak_mm"
 pure_srcLabel Kombinasi         = "kombinasi"
 pure_srcLabel KombinasiDanKotak = "kombinasi*"
 
--- Laporan semakan: jadual template + ralat + amaran + kesimpulan
-pure_report :: [Spec] -> [Fail] -> [String] -> [String] -> String
-pure_report specs files errs warns =
+-- Laporan semakan: fail data + pemetaan lajur, jadual template, ralat, amaran, kesimpulan
+-- Args: spesifikasi, fail CSV, pemetaan [csv ...] yang tidak digunakan, ralat, amaran
+pure_report :: [Spec] -> [Fail] -> [String] -> [String] -> [String] -> String
+pure_report specs files unusedMaps errs warns =
   unlines $
     [ "=== SEMAKAN ==="
     , "Config  : " ++ show (length specs) ++ " template aktif"
-    , "Data    : " ++ unwords (map fst files)
-    , ""
+    , "Data    :"
+    ]
+      ++ [ printf "  %-32s %5d baris   pemetaan lajur: %s" (fPath f) (length (fRows f)) (fMap f)
+         | f <- files ]
+      ++ [ "  (pemetaan tidak digunakan, tiada fail CSV sepadan: " ++ intercalate ", " unusedMaps ++ ")"
+         | not (null unusedMaps) ]
+      ++
+    [ ""
     , printf "%-14s %-13s %-27s %-11s %6s" "Template" "Kertas (mm)" "Kotak x1,y1 - x2,y2" "Sumber" "Sijil"
     ]
       ++ map line specs
@@ -322,7 +344,7 @@ pure_report specs files errs warns =
       ++ section "AMARAN" warns
       ++ [ conclusion ]
   where
-    cnt s    = length [ () | (_, ps) <- files, p <- ps, pTemplate p == sName s ]
+    cnt s    = length [ () | Fail _ ps _ <- files, p <- ps, pTemplate p == sName s ]
     maxCnt   = maximum (1 : map cnt specs)
     bar n    = replicate (n * 30 `div` maxCnt) '█'
     line :: Spec -> String
@@ -406,7 +428,7 @@ pure_help = unlines
   , "   (dalam projek ini, `make semak` dan `make jana` melakukannya untuk anda)"
   , ""
   , "FORMAT CSV   (UTF-8, baris pertama = tajuk)"
-  , "   nama,nokp,template        (nama lajur lain boleh dipetakan dalam [csv] config.txt;"
+  , "   nama,nokp,template        (tajuk lain boleh dipetakan dalam [csv] config.txt;"
   , "   AHMAD BIN ALI,900101-14-5555,kursus-a   lajur tambahan lain diabaikan)"
   , "   nokp: apa-apa format diterima (No. KP, nombor pengenalan bukan warganegara, dsb.)."
   , "         Amaran hanya jika kosong."
@@ -416,7 +438,9 @@ pure_help = unlines
   , ""
   , "CONFIG   (lihat komen di kepala config.txt untuk semua kunci)"
   , "   [global]  nilai lalai untuk semua template"
-  , "   [csv]     nama = NAMA GURU   (pemetaan nama lajur CSV; pilihan)"
+  , "   [csv]     nama = NAMA GURU   (pemetaan lajur CSV lalai; pilihan)"
+  , "   [csv fail.csv]  pemetaan untuk SATU fail sahaja (nama fail tanpa folder);"
+  , "             menang atas [csv], kunci demi kunci. Kunci: nama, nokp, template"
   , "   [nama]    kertas_mm = 297 210        lebar tinggi kertas (mm)"
   , "             kotak_mm  = 60 95 237 125  x1 y1 x2 y2 ruang kosong, dari SUDUT KIRI ATAS (mm)"
   , "             ATAU kombinasi: kotakHorizontalCenterPoint_mm, kotakWidth_mm,"
@@ -452,9 +476,13 @@ pure_knownKeys =
   [ "font", "tebal", "kertas_mm", "offset_mm", "kotak_mm"
   , "nama_saiz", "kp_saiz", "jarak_mm" ] ++ pure_comboKeys
 
--- Kunci yang dibenarkan dalam seksyen [csv]
+-- Kunci yang dibenarkan dalam seksyen [csv] dan [csv nama-fail.csv]
 pure_csvKeys :: [String]
 pure_csvKeys = ["nama", "nokp", "template"]
+
+-- Adakah nama seksyen ini seksyen pemetaan CSV? ("csv" atau "csv <nama fail>")
+pure_isCsvSection :: String -> Bool
+pure_isCsvSection n = n == "csv" || "csv " `isPrefixOf` n
 
 -- Pecahkan config kepada seksyen [nama] + pasangan kunci = nilai
 pure_parseSections :: String -> Either String [Section]
@@ -480,14 +508,12 @@ pure_parseSections src = go Nothing [] (zip [1 :: Int ..] (lines src))
               Left ("Baris " ++ show n ++ " tidak difahami: " ++ l)
 
 -- Config penuh: senarai template + pemetaan lajur CSV
-pure_parseConfig :: String -> Either String ([Spec], ColMap)
+pure_parseConfig :: String -> Either String ([Spec], CsvCfg)
 pure_parseConfig src = do
   secs <- pure_parseSections src
   let isGlobal = (== "global") . fst
-      isCsv    = (== "csv") . fst
       gs = filter isGlobal secs
-      cs = filter isCsv secs
-      ts = filter (\s -> not (isGlobal s || isCsv s)) secs
+      ts = filter (\s -> not (isGlobal s || pure_isCsvSection (fst s))) secs
       gkv   = concatMap snd gs
       names = map fst ts
       dups  = [ n | (i, n) <- zip [0 :: Int ..] names, n `elem` take i names ]
@@ -500,19 +526,47 @@ pure_parseConfig src = do
     ++ "\n(satu nama template = SATU seksyen; letak # pada seksyen yang tidak digunakan)")
   when (null ts) $
     Left "Tiada template aktif dalam config.txt (semua dinyahaktifkan dengan # ?)"
-  cols  <- pure_buildCols (concatMap snd cs)
-  specs <- mapM (pure_buildSpec gkv) ts
-  pure (specs, cols)
+  csvCfg <- pure_buildCsvCfg secs
+  specs  <- mapM (pure_buildSpec gkv) ts
+  pure (specs, csvCfg)
 
--- Pemetaan lajur CSV dari seksyen [csv]. Kunci tiada = guna nama lalai (nama, nokp, template).
-pure_buildCols :: [(String, String)] -> Either String ColMap
-pure_buildCols kv = do
-  let bad = [ k | (k, _) <- kv, k `notElem` pure_csvKeys ]
-  unless (null bad) $
-    Left ("[csv] kunci tidak dikenali: " ++ unwords bad ++ "  (yang sah: " ++ unwords pure_csvKeys ++ ")")
-  pure (ColMap (pick "nama") (pick "nokp") (pick "template"))
+-- Pemetaan lajur CSV dari seksyen [csv] dan [csv nama-fail.csv].
+-- Kunci tiada = peringkat seterusnya (lihat pure_colsFor). Semua kunci disemak.
+pure_buildCsvCfg :: [Section] -> Either String CsvCfg
+pure_buildCsvCfg secs = do
+  let csvSecs  = [ (n, kv) | (n, kv) <- secs, pure_isCsvSection n ]
+      defaults = concat [ kv | (n, kv) <- csvSecs, n == "csv" ]
+      files    = [ (pure_strip (drop 4 n), kv) | (n, kv) <- csvSecs, "csv " `isPrefixOf` n ]
+      fnames   = map (takeFileName . fst) files
+      dups     = [ f | (i, f) <- zip [0 :: Int ..] fnames, f `elem` take i fnames ]
+      bad      = [ "[" ++ n ++ "] kunci tidak dikenali: '" ++ k ++ "'  (yang sah: "
+                   ++ unwords pure_csvKeys ++ ")"
+                 | (n, kv) <- csvSecs, (k, _) <- kv, k `notElem` pure_csvKeys ]
+  unless (null bad) $ Left (intercalate "\n" bad)
+  unless (null dups) $
+    Left ("Seksyen [csv ...] berganda untuk fail: " ++ unwords dups
+          ++ "\n(satu fail = SATU seksyen; letak # pada yang tidak digunakan)")
+  pure (CsvCfg defaults files)
+
+-- Pemetaan lajur untuk SATU fail CSV. Pulangkan (pemetaan, label untuk laporan).
+--   Setiap kunci: [csv nama-fail.csv] dahulu, kemudian [csv], kemudian nama lalai.
+--   Fail dipadan dengan NAMA FAIL sahaja (folder diabaikan).
+pure_colsFor :: CsvCfg -> FilePath -> (ColMap, String)
+pure_colsFor cc path = (ColMap (pick "nama") (pick "nokp") (pick "template"), label)
   where
-    pick k = fromMaybe k (lookup k kv)
+    fileKv = lookup (takeFileName path) [ (takeFileName f, kv) | (f, kv) <- ccFiles cc ]
+    pick k = case fileKv >>= lookup k of
+      Just v  -> v
+      Nothing -> fromMaybe k (lookup k (ccDefault cc))
+    label = case fileKv of
+      Just _  -> "[csv " ++ takeFileName path ++ "]"
+      Nothing | null (ccDefault cc) -> "lalai (nama, nokp, template)"
+              | otherwise           -> "[csv]"
+
+-- Seksyen [csv nama-fail.csv] yang tiada fail CSV sepadan (biasanya salah eja nama fail)
+pure_unusedMaps :: CsvCfg -> [FilePath] -> [String]
+pure_unusedMaps cc paths =
+  [ "[csv " ++ f ++ "]" | (f, _) <- ccFiles cc, takeFileName f `notElem` map takeFileName paths ]
 
 -- Cari kotak dalam SATU senarai kunci (satu seksyen sahaja).
 --   Nothing          = seksyen ini tidak menulis kotak langsung
@@ -703,7 +757,7 @@ io_generateOne outDir s ps =
       showPage
       pure h
 
-io_loadConfig :: FilePath -> IO ([Spec], ColMap)
+io_loadConfig :: FilePath -> IO ([Spec], CsvCfg)
 io_loadConfig path = do
   io_requireFile "Fail config" path
   readFile path >>= either io_fail pure . pure_parseConfig
@@ -712,15 +766,17 @@ io_loadConfig path = do
 --   - BOM UTF-8 (kadang-kadang ditambah oleh Calc) dibuang
 --   - fail kosong / hanya ruang kosong dipulangkan sebagai 0 baris
 --     (pure_checkRows akan beri amaran; cassava sendiri akan ranap pada 0 bait)
---   - lajur yang diperlukan (ikut ColMap) mesti ada dalam tajuk; lajur lain diabaikan
-io_loadCsv :: ColMap -> FilePath -> IO Fail
-io_loadCsv cols path = do
+--   - lajur yang diperlukan (ikut pemetaan) mesti ada dalam tajuk; lajur lain diabaikan
+-- Args: (pemetaan lajur, label pemetaan) untuk fail ini, seksyen [csv ...] yang tidak
+--       sepadan dengan mana-mana fail (petunjuk salah eja), laluan fail
+io_loadCsv :: (ColMap, String) -> [String] -> FilePath -> IO Fail
+io_loadCsv (cols, mapLabel) unused path = do
   io_requireFile "Fail CSV" path
   raw <- BL.readFile path
   let bytes = if BL.take 3 raw == BL.pack [0xEF, 0xBB, 0xBF] then BL.drop 3 raw else raw
       blank = BL.all (`elem` [9, 10, 13, 32]) bytes   -- tab, LF, CR, ruang
   if blank
-    then pure (path, [])
+    then pure (Fail path [] mapLabel)
     else case Csv.decodeByName bytes of
       Left err -> io_fail (path ++ ": CSV tidak boleh dibaca: " ++ err
                            ++ "\n(pastikan baris pertama ialah tajuk lajur dan fail ialah UTF-8)")
@@ -731,20 +787,26 @@ io_loadCsv cols path = do
         unless (null missing) $
           io_fail (path ++ ": lajur CSV tiada: " ++ intercalate ", " [ "'" ++ c ++ "'" | c <- missing ]
                    ++ "\n  lajur yang ada : " ++ intercalate ", " have
-                   ++ "\n  (nama lajur boleh dipetakan dalam seksyen [csv] config.txt)")
+                   ++ "\n  pemetaan guna  : " ++ mapLabel
+                   ++ (if null unused then ""
+                       else "\n  petunjuk       : seksyen ini tiada fail sepadan (semak ejaan nama fail): "
+                            ++ intercalate ", " unused)
+                   ++ "\n  (nama lajur dipetakan dalam seksyen [csv " ++ takeFileName path
+                   ++ "] atau [csv] dalam config.txt)")
         case mapM (pure_toPeserta cols) (V.toList vs) of
           Left err -> io_fail (path ++ ": baris CSV tidak boleh dibaca: " ++ err)
-          Right ps -> pure (path, ps)
+          Right ps -> pure (Fail path ps mapLabel)
 
 -- Muat config + CSV, semak, paparkan laporan. Berhenti jika ada ralat.
 -- Dikongsi oleh arahan `semak` dan `jana`.
 io_prepare :: FilePath -> [FilePath] -> IO ([Spec], [Fail])
 io_prepare cfgPath csvPaths = do
-  (specs, cols) <- io_loadConfig cfgPath
-  files <- forM csvPaths (io_loadCsv cols)
+  (specs, csvCfg) <- io_loadConfig cfgPath
+  let unusedMaps = pure_unusedMaps csvCfg csvPaths
+  files <- forM csvPaths $ \p -> io_loadCsv (pure_colsFor csvCfg p) unusedMaps p
   let (errs0, warns) = pure_checkRows (map sName specs) files
-      errs = errs0 ++ [ "tiada sebarang baris data dalam semua fail CSV" | all (null . snd) files ]
-  putStr (pure_report specs files errs warns)
+      errs = errs0 ++ [ "tiada sebarang baris data dalam semua fail CSV" | all (null . fRows) files ]
+  putStr (pure_report specs files unusedMaps errs warns)
   unless (null errs) exitFailure
   pure (specs, files)
 
@@ -754,7 +816,7 @@ io_jana cfgPath outDir csvPaths = do
     io_fail "tiada fail CSV diberi. Contoh: jana-sijil jana config.txt output/ data/contoh.csv"
   (specs, files) <- io_prepare cfgPath csvPaths
   let byTpl = Map.fromListWith (flip (++))
-                [ (pTemplate p, [p]) | (_, ps) <- files, p <- ps ]
+                [ (pTemplate p, [p]) | Fail _ ps _ <- files, p <- ps ]
   createDirectoryIfMissing True outDir
   putStrLn ""
   hasil <- fmap concat $ forM specs $ \s ->
